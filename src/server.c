@@ -537,8 +537,21 @@ static void handle_api_upload(int client_sock, const char *headers) {
 #define PINS_TMP_PATH "ux0:/VitaDrop/pins.txt.tmp"
 #define PINS_MAX      16384
 
+/* Make sure the pins folder and file exist so pins.txt can be found
+ * and hand-edited from the moment the app starts — not only after
+ * the first save from a browser. */
+static void ensure_pins_file(void) {
+    sceIoMkdir("ux0:/VitaDrop", 0777);   /* fine if it already exists */
+    SceIoStat st;
+    if (sceIoGetstat(PINS_PATH, &st) < 0) {
+        SceUID fd = sceIoOpen(PINS_PATH, SCE_O_WRONLY | SCE_O_CREAT, 0666);
+        if (fd >= 0) sceIoClose(fd);
+    }
+}
+
 // GET /api/pins — Return the pins file verbatim (empty if none yet)
 static void handle_api_pins_get(int client_sock) {
+    ensure_pins_file();
     char *body = malloc(PINS_MAX + 1);
     if (!body) {
         sceNetSend(client_sock, http_500, strlen(http_500), 0);
@@ -816,6 +829,8 @@ int server_init(int port) {
 
     if (sceNetBind(server_socket, (SceNetSockaddr *)&server_addr, sizeof(server_addr)) < 0) return -1;
     if (sceNetListen(server_socket, MAX_CONNECTIONS) < 0) return -1;
+
+    ensure_pins_file();   /* ux0:/VitaDrop/pins.txt exists from app start */
 
     int opt = 1;
     sceNetSetsockopt(server_socket, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO, &opt, sizeof(opt));
