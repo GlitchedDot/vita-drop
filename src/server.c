@@ -526,6 +526,77 @@ static void handle_api_upload(int client_sock, const char *headers) {
 }
 
 /* ============================================================
+ * Pins file — the sidebar pins live ON THE VITA so every browser
+ * sees the same list. Plain text, one pin per line:
+ *     Name "ux0:/path"
+ * Hand-editable in any text editor. The web UI reads the file via
+ * GET /api/pins and replaces it via POST /api/pins; the server
+ * stores the text verbatim and never interprets it.
+ * ============================================================ */
+#define PINS_PATH     "ux0:/VitaDrop/pins.txt"
+#define PINS_TMP_PATH "ux0:/VitaDrop/pins.txt.tmp"
+#define PINS_MAX      16384
+
+// GET /api/pins — Return the pins file verbatim (empty if none yet)
+static void handle_api_pins_get(int client_sock) {
+    char *body = malloc(PINS_MAX + 1);
+    if (!body) {
+        sceNetSend(client_sock, http_500, strlen(http_500), 0);
+        return;
+    }
+    int len = 0;
+    SceUID fd = sceIoOpen(PINS_PATH, SCE_O_RDONLY, 0);
+    if (fd >= 0) {
+        int r = sceIoRead(fd, body, PINS_MAX);
+        if (r > 0) len = r;
+        sceIoClose(fd);
+    }
+    body[len] = '\0';
+
+    char hdr[192];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n\r\n", len);
+    sceNetSend(client_sock, hdr, hlen, 0);
+    if (len > 0) sceNetSend(client_sock, body, len, 0);
+    free(body);
+}
+
+// POST /api/pins — Replace the pins file with the request body.
+// Written to a temp file and renamed over the old one so a power
+// cut mid-write cannot leave a half-written pins file behind.
+static void handle_api_pins_post(int client_sock, const char *headers) {
+    uint64_t total = get_content_length(headers);
+    if (total > PINS_MAX) total = PINS_MAX;
+
+    char *body = malloc(PINS_MAX + 1);
+    if (!body) {
+        sceNetSend(client_sock, http_500, strlen(http_500), 0);
+        return;
+    }
+    uint64_t got = 0;
+    while (got < total) {
+        int r = sceNetRecv(client_sock, body + got, (int)(total - got), 0);
+        if (r <= 0) break;
+        got += (uint64_t)r;
+    }
+    body[got] = '\0';
+
+    sceIoMkdir("ux0:/VitaDrop", 0777);   /* fine if it already exists */
+    SceUID fd = sceIoOpen(PINS_TMP_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+    if (fd >= 0) {
+        if (got > 0) sceIoWrite(fd, body, (SceSize)got);
+        sceIoClose(fd);
+        sceIoRemove(PINS_PATH);
+        sceIoRename(PINS_TMP_PATH, PINS_PATH);
+    }
+    free(body);
+    sceNetSend(client_sock, http_200_json, strlen(http_200_json), 0);
+}
+
+/* ============================================================
  * Main Request Router
  * ============================================================ */
 static void handle_client(int client_sock) {
@@ -575,6 +646,9 @@ static void handle_client(int client_sock) {
             if (path[0]) handle_api_download(client_sock, path);
             else sceNetSend(client_sock, http_404, strlen(http_404), 0);
         }
+        else if (strcmp(req_path, "/api/pins") == 0) {
+            handle_api_pins_get(client_sock);
+        }
         else {
             sceNetSend(client_sock, http_404, strlen(http_404), 0);
         }
@@ -594,6 +668,9 @@ static void handle_client(int client_sock) {
             get_query_value(req_query, "path", path, sizeof(path));
             if (path[0]) handle_api_delete(client_sock, path);
             else sceNetSend(client_sock, http_404, strlen(http_404), 0);
+        }
+        else if (strcmp(req_path, "/api/pins") == 0) {
+            handle_api_pins_post(client_sock, header_buf);
         }
         else {
             sceNetSend(client_sock, http_404, strlen(http_404), 0);

@@ -187,6 +187,58 @@ static void format_bytes(uint64_t bytes, char *out, size_t max_len) {
     else snprintf(out, max_len, "%.2f GB", bytes / (1024.0f * 1024.0f * 1024.0f));
 }
 
+// USB trident glyph, 12x14 (bit 11 = leftmost column). Drawn next to
+// the battery meter while external power is connected.
+static const uint16_t usb_glyph[14] = {
+    0x060, 0x0F0, 0x060, 0x667, 0x967, 0x667, 0x462,
+    0x462, 0x462, 0x264, 0x168, 0x0F0, 0x060, 0x060
+};
+
+static void draw_usb_icon(int x, int y, uint32_t color) {
+    for (int row = 0; row < 14; row++) {
+        for (int col = 0; col < 12; col++) {
+            if (usb_glyph[row] & (1 << (11 - col))) {
+                draw_box(x + col * 2, y + row * 2, 2, 2, color);
+            }
+        }
+    }
+}
+
+// Battery meter for the top bar, anchored to the right edge: USB icon
+// (only while plugged in; green while charging, plain while on USB
+// power but full), then the battery outline + level fill, then the
+// percentage text.
+static void draw_battery(int right_x, int y) {
+    int pct = scePowerGetBatteryLifePercent();
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    int online = scePowerIsPowerOnline();
+    int charging = scePowerIsBatteryCharging();
+
+    char pct_str[8];
+    snprintf(pct_str, sizeof(pct_str), "%d%%", pct);
+    int tw = (int)strlen(pct_str) * 15;   /* scale 3: 4*3 + 3 advance */
+    draw_string(right_x - tw, y + 4, pct_str, 3, COLOR_TEXT);
+
+    const int bw = 46, bh = 20;
+    int bx = right_x - tw - 8 - bw;
+    draw_box(bx, y, bw, 2, COLOR_TEXT_D);
+    draw_box(bx, y + bh - 2, bw, 2, COLOR_TEXT_D);
+    draw_box(bx, y, 2, bh, COLOR_TEXT_D);
+    draw_box(bx + bw - 2, y, 2, bh, COLOR_TEXT_D);
+    draw_box(bx + bw, y + 6, 4, 8, COLOR_TEXT_D);   /* terminal nub */
+
+    uint32_t fill = (pct > 30) ? COLOR_SUCCESS
+                  : (pct > 15) ? RGBA8(245, 158, 11, 255)
+                               : COLOR_ERROR;
+    int fw = (bw - 6) * pct / 100;
+    if (fw > 0) draw_box(bx + 3, y + 3, fw, bh - 6, fill);
+
+    if (online) {
+        draw_usb_icon(bx - 32, y - 4, charging ? COLOR_SUCCESS : COLOR_TEXT);
+    }
+}
+
 static void swap_buffers(void) {
     SceDisplayFrameBuf fb = {
         .size = sizeof(SceDisplayFrameBuf),
@@ -302,6 +354,7 @@ int main(int argc, char *argv[]) {
         draw_box(0, 0, SCREEN_W, 50, COLOR_PANEL);
         draw_string(20, 15, "VitaDrop", 4, COLOR_ACCENT);
         draw_string(220, 20, "File Manager", 3, COLOR_TEXT_D);
+        draw_battery(SCREEN_W - 20, 15);
 
         if (server_ok == 0) {
             // ===== LEFT COLUMN (x 20-580, y 60-490) =====
